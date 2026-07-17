@@ -1,0 +1,13 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Node / Python local junk
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+.env
