@@ -25,7 +25,7 @@ Download a skill repo into a **temporary** cache, pick a skill, load its `SKILL.
 
 | Form | Behavior |
 |------|----------|
-| *(no args)* | List every skill in the ephemeral cache; ask user to pick one (optional args); then run it |
+| *(no args)* | List cached skills; **(1)** ask which skill; **(2)** ask for args to pass it (may be empty); then run |
 | `owner/repo` | Ensure cache; if one skill → run it; if many → ask user (name + description) |
 | `owner/repo@skill-name` | Ensure cache; run that skill; remaining tokens are skill args |
 | `update owner/repo` | Refresh the **whole** repo cache only (no skill execution). Strip `@…` if present |
@@ -154,24 +154,40 @@ skill_run resolve <owner/repo[@skill]>
 |--------|--------|
 | `ok: false` | Show `message`; stop |
 | `count: 0` / empty `skills` | Tell the user the ephemeral cache is empty. Show how to populate it (`/skill owner/repo`) and the usage block. Stop. |
-| `count >= 1` | Present every skill for selection (below) |
+| `count >= 1` | Run the **two-step prompt** below — skill pick, then args. **Do not skip step 2.** |
 
-**Present choices:** For each entry in `skills[]`, show:
+Cached-pick is **always two explicit questions**, in order. Do **not** fold args into the skill menu’s “Other” / free-text escape hatch as the only way to pass them.
+
+#### Step 1 — Which skill?
+
+For each entry in `skills[]`, show:
 
 - **Label / pick key:** `ref` (`owner/repo@name`) — preferred; falls back to `source@name` if `ref` missing
 - **Description:** `description`
 - Optionally group by `source` if many entries
 
-Use a structured choice prompt when available; otherwise a clear numbered list. Also invite optional skill args:
+Use a structured choice prompt when available; otherwise a clear numbered list.  
+This step is **skill only** — do not ask for args here and do not require the user to type `ref arg1 arg2` in “Other” just to supply args.
 
-- Prefer letting the user pick a skill **and** optionally type freeform args (e.g. via an “Other” / free-text option like `owner/repo@name arg1 arg2`).
-- If the host only supports pure selection, after they pick ask once: “Any args for this skill?” (empty = none).
+#### Step 2 — Args for that skill? (required prompt; empty allowed)
 
-After the user chooses:
+**After** the skill is chosen, always ask a **second, separate** question for arguments to forward to that skill. Examples of acceptable prompts:
 
-1. Parse their answer into **source** (`owner/repo` or `owner/repo@name` / `ref`) and **skill args** (remainder, may be empty).
-2. Prefer the matching entry’s `path` / `dir` from the list when the pick maps cleanly to one skill; otherwise run `skill_run resolve <ref>` and continue from §3.
-3. Continue to §4 with those args.
+- “Arguments to pass to `<ref>`? (leave empty for none)”
+- “Any args for this skill? Press enter / leave blank for none.”
+
+Rules:
+
+1. **Always ask step 2** — even when you expect no args. Never jump straight to §4 after step 1.
+2. Empty / blank / “none” / skip → skill args = empty list. That is a valid answer.
+3. Non-empty reply → entire reply is the skill args string (tokenize if needed); do not re-parse it as a new `owner/repo`.
+4. Prefer a free-text / open input for step 2 when the host supports it. If only multiple-choice exists, offer at least: **“No args”** (default) and **“Other…”** (type args).
+5. Do **not** rely on step 1’s “Other” as the primary args path. “Other” on step 1 is only for typing a `ref` (or `owner/repo@name`) not listed.
+
+After both answers:
+
+1. Resolve the pick to `path` / `dir` from the matching `skills[]` entry when possible; otherwise `skill_run resolve <ref>` and continue from §3.
+2. Continue to §4 with the args from step 2.
 
 Do **not** clone new repos in this mode unless you re-enter run mode with an explicit `owner/repo` the user typed that is not in the cache.
 
@@ -206,5 +222,5 @@ Remote skills are untrusted third-party instructions (same class of risk as `npx
 /skill update
 ```
 
-Bare `/skill` lists cached skills and asks which to run (optional args).  
+Bare `/skill` lists cached skills, asks which to run, then **always** asks for args in a second prompt (empty = none).  
 `update …@ignored` still refreshes the entire `vercel-labs/agent-skills` cache only. Bare `/skill update` refreshes every folder under `$TEMP/skills/`.

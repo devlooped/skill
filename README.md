@@ -25,7 +25,7 @@ In an agent that supports skills (e.g. Grok Build):
 
 | Form | Behavior |
 |------|----------|
-| *(no args)* | List every skill in the ephemeral cache; ask which to run (optional args) |
+| *(no args)* | List cached skills; ask which to run; then ask for args (may be empty) |
 | `owner/repo` | Download (or reuse cache); if one skill → run it; if many → ask which |
 | `owner/repo@skill-name` | Run that skill; remaining tokens are skill args |
 | `update owner/repo` | Refresh the whole repo cache only (no skill execution) |
@@ -51,7 +51,7 @@ Also accepts GitHub HTTPS / `git@` URLs (normalized to `owner/repo`).
 2. Discovers skills in common layouts (`skills/`, `.agents/skills/`, root `SKILL.md`, etc.).
 3. Loads the selected `SKILL.md` and runs it as if it were installed — **without** copying into permanent skill roots.
 
-Bare `/skill` does not clone: it lists whatever is already under `$TEMP/skills/` and prompts for a pick.
+Bare `/skill` does not clone: it lists whatever is already under `$TEMP/skills/`, asks which skill to run, then always asks for args in a second prompt (empty = none).
 
 Cache is reused across runs; refresh with `/skill update <owner/repo>` or `/skill update` (all cached).
 
