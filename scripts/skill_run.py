@@ -4,12 +4,13 @@
 Usage:
     skill_run.py ensure  <owner/repo>
     skill_run.py update  [<owner/repo[@skill]>]
-    skill_run.py list    <owner/repo>
+    skill_run.py list    [<owner/repo>]
     skill_run.py resolve <owner/repo[@skill]>
 
 Prints JSON on stdout. Exit 0 on success, 1 on error.
 With bare `update` (no source), refreshes every previously cached repo
 and prints progress on stderr.
+With bare `list` (no source), lists every skill under previously cached repos.
 """
 
 from __future__ import annotations
@@ -556,18 +557,72 @@ def cmd_update_all() -> None:
     )
 
 
-def cmd_list(source_raw: str) -> None:
+def cmd_list(source_raw: str | None) -> None:
+    """List skills in one repo, or every cached skill when source is omitted."""
+    if source_raw is None or not source_raw.strip():
+        cmd_list_cached()
+        return
+
     owner_repo, _ = normalize_source(source_raw)
     cache, action = ensure_repo(owner_repo)
     skills = discover_skills(cache)
     emit(
         {
             "ok": True,
+            "mode": "single",
             "source": owner_repo,
             "cache_dir": str(cache.resolve()),
             "action": action,
             "skills": skills,
             "needs_choice": len(skills) > 1,
+        }
+    )
+
+
+def cmd_list_cached() -> None:
+    """Discover skills in every previously cached repo (no network)."""
+    repos = list_cached_repos()
+    root = cache_root()
+    root_str = str(root.resolve()) if root.exists() else str(root)
+
+    skills_out: list[dict[str, str]] = []
+    for owner_repo in repos:
+        cache = cache_dir_for(owner_repo)
+        if not has_cache(cache):
+            continue
+        for s in discover_skills(cache):
+            name = s["name"]
+            skills_out.append(
+                {
+                    "source": owner_repo,
+                    "name": name,
+                    "description": s["description"],
+                    "path": s["path"],
+                    "dir": s["dir"],
+                    # Unambiguous pick key for agents / users
+                    "ref": f"{owner_repo}@{name}",
+                }
+            )
+
+    if not skills_out:
+        emit(
+            {
+                "ok": True,
+                "mode": "cached",
+                "message": "No cached skills found under $TEMP/skills.",
+                "cache_root": root_str,
+                "count": 0,
+                "skills": [],
+            }
+        )
+
+    emit(
+        {
+            "ok": True,
+            "mode": "cached",
+            "cache_root": root_str,
+            "count": len(skills_out),
+            "skills": skills_out,
         }
     )
 
@@ -632,7 +687,8 @@ def cmd_resolve(source_raw: str) -> None:
 def usage() -> None:
     fail(
         "Usage: skill_run.py <ensure|update|list|resolve> [owner/repo[@skill]]\n"
-        "  update with no source refreshes every previously cached repo.",
+        "  update with no source refreshes every previously cached repo.\n"
+        "  list with no source lists every skill under previously cached repos.",
     )
 
 
@@ -649,8 +705,6 @@ def main(argv: list[str]) -> None:
     elif cmd == "update":
         cmd_update(source)
     elif cmd == "list":
-        if not source:
-            fail("Usage: skill_run.py list <owner/repo>")
         cmd_list(source)
     elif cmd == "resolve":
         if not source:

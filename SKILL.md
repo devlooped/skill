@@ -16,6 +16,7 @@ Download a skill repo into a **temporary** cache, pick a skill, load its `SKILL.
 ## Usage
 
 ```text
+/skill
 /skill <owner/repo> [args...]
 /skill <owner/repo@skill-name> [args...]
 /skill update <owner/repo>
@@ -24,6 +25,7 @@ Download a skill repo into a **temporary** cache, pick a skill, load its `SKILL.
 
 | Form | Behavior |
 |------|----------|
+| *(no args)* | List every skill in the ephemeral cache; ask user to pick one (optional args); then run it |
 | `owner/repo` | Ensure cache; if one skill → run it; if many → ask user (name + description) |
 | `owner/repo@skill-name` | Ensure cache; run that skill; remaining tokens are skill args |
 | `update owner/repo` | Refresh the **whole** repo cache only (no skill execution). Strip `@…` if present |
@@ -79,12 +81,15 @@ Always use **absolute paths** to the scripts.
 | `ensure <owner/repo>` | Clone if missing; do **not** refresh if present |
 | `update <owner/repo[@skill]>` | Pull or re-clone whole repo; ignore `@skill` |
 | `update` (no source) | Update **all** dirs under `$TEMP/skills/`; progress on **stderr**; summary JSON on stdout |
-| `list <owner/repo>` | Ensure + list skills |
+| `list <owner/repo>` | Ensure + list skills in that repo |
+| `list` (no source) | List **every** skill under previously cached repos (no network) |
 | `resolve <owner/repo[@skill]>` | Ensure + select one skill or `needs_choice` |
 
 Parse stdout as JSON. On `ok: false` or non-zero exit, show `message` (and per-repo `results` when present) and stop.
 
 **Update-all JSON** (`mode: "all"`): `updated`, `failed`, `cache_root`, `results[]` each with `ok`, `source`, `action` or `message`. Progress lines on stderr look like `[1/3] owner/repo → pulled`.
+
+**Cached-list JSON** (`mode: "cached"`): `count`, `cache_root`, `skills[]` each with `source`, `name`, `description`, `path`, `dir`, `ref` (`owner/repo@name`). Empty cache → `count: 0` and a `message`.
 
 Download prefers **`gh repo clone`**, then **`git clone --depth 1`**. Private repos need `gh auth login`.
 
@@ -95,9 +100,10 @@ Download prefers **`gh repo clone`**, then **`git clone --depth 1`**. Private re
 Tokens after `/skill`:
 
 - **`update` first** → update mode. Source = second token if present; if omitted, update **all** cached repos. Strip `@…` for a single-repo helper call (helper also strips). Do not run a remote skill afterward.
-- **Otherwise** → run mode. Source = first token (`owner/repo` or `owner/repo@name`). All remaining tokens = **skill args**.
+- **Otherwise** → run mode. Source = first token (`owner/repo` or `owner/repo@name`) if present. All remaining tokens = **skill args**.
+- **No tokens** → cached-pick mode (list cache, ask user, then run).
 
-If run mode has no source, print usage and stop. Bare `/skill update` is valid (update-all).
+Bare `/skill update` is valid (update-all). Bare `/skill` is valid (cached pick).
 
 ### 2. Call the helper
 
@@ -117,7 +123,15 @@ skill_run update
 
 Do **not** invent a default owner/repo and do **not** loop in the agent — the script enumerates `$TEMP/skills/*`, updates each, and streams progress on stderr. After it finishes, summarize from the JSON (`updated` / `failed` / each `results[]` entry). Surface stderr progress to the user while it runs when practical (or report the final per-repo lines). Stop; do not execute a remote skill.
 
-**Run mode:**
+**Cached-pick mode (bare `/skill`):**
+
+```text
+skill_run list
+```
+
+Then follow **§3b**. Do **not** invent a default owner/repo.
+
+**Run mode (source given):**
 
 ```text
 skill_run resolve <owner/repo[@skill]>
@@ -133,6 +147,33 @@ skill_run resolve <owner/repo[@skill]>
 | Unknown `@name` | Error includes available `skills`; list them and stop or ask |
 
 **Disambiguation:** When multiple skills and no `@name`, present each skill’s **name** and **description** (from the JSON). Use a structured choice prompt when available; otherwise a clear numbered list. After the user picks, use that skill’s `path` / `dir` from the list (or re-run `resolve owner/repo@chosen-name`).
+
+### 3b. Handle cached-list result (bare `/skill`)
+
+| Result | Action |
+|--------|--------|
+| `ok: false` | Show `message`; stop |
+| `count: 0` / empty `skills` | Tell the user the ephemeral cache is empty. Show how to populate it (`/skill owner/repo`) and the usage block. Stop. |
+| `count >= 1` | Present every skill for selection (below) |
+
+**Present choices:** For each entry in `skills[]`, show:
+
+- **Label / pick key:** `ref` (`owner/repo@name`) — preferred; falls back to `source@name` if `ref` missing
+- **Description:** `description`
+- Optionally group by `source` if many entries
+
+Use a structured choice prompt when available; otherwise a clear numbered list. Also invite optional skill args:
+
+- Prefer letting the user pick a skill **and** optionally type freeform args (e.g. via an “Other” / free-text option like `owner/repo@name arg1 arg2`).
+- If the host only supports pure selection, after they pick ask once: “Any args for this skill?” (empty = none).
+
+After the user chooses:
+
+1. Parse their answer into **source** (`owner/repo` or `owner/repo@name` / `ref`) and **skill args** (remainder, may be empty).
+2. Prefer the matching entry’s `path` / `dir` from the list when the pick maps cleanly to one skill; otherwise run `skill_run resolve <ref>` and continue from §3.
+3. Continue to §4 with those args.
+
+Do **not** clone new repos in this mode unless you re-enter run mode with an explicit `owner/repo` the user typed that is not in the cache.
 
 ### 4. Load and execute
 
@@ -155,6 +196,7 @@ Remote skills are untrusted third-party instructions (same class of risk as `npx
 ## Examples
 
 ```text
+/skill
 /skill microsoft/playwright-cli
 /skill vercel-labs/agent-skills
 /skill vercel-labs/agent-skills@web-design-guidelines
@@ -164,4 +206,5 @@ Remote skills are untrusted third-party instructions (same class of risk as `npx
 /skill update
 ```
 
+Bare `/skill` lists cached skills and asks which to run (optional args).  
 `update …@ignored` still refreshes the entire `vercel-labs/agent-skills` cache only. Bare `/skill update` refreshes every folder under `$TEMP/skills/`.

@@ -5,12 +5,13 @@
  * Usage:
  *   skill_run.ts ensure  <owner/repo>
  *   skill_run.ts update  [<owner/repo[@skill]>]
- *   skill_run.ts list    <owner/repo>
+ *   skill_run.ts list    [<owner/repo>]
  *   skill_run.ts resolve <owner/repo[@skill]>
  *
  * Prints JSON on stdout. Exit 0 on success, 1 on error.
  * Bare `update` (no source) refreshes every previously cached repo
  * and prints progress on stderr.
+ * Bare `list` (no source) lists every skill under previously cached repos.
  */
 
 import { spawnSync } from "node:child_process";
@@ -601,17 +602,64 @@ function cmdUpdateAll(): never {
   );
 }
 
-function cmdList(sourceRaw: string): never {
-  const { ownerRepo } = normalizeSource(sourceRaw);
+function cmdList(sourceRaw: string | null): never {
+  if (sourceRaw === null || !sourceRaw.trim()) {
+    cmdListCached();
+  }
+
+  const { ownerRepo } = normalizeSource(sourceRaw!);
   const { cache, action } = ensureRepo(ownerRepo);
   const skills = discoverSkills(cache);
   emit({
     ok: true,
+    mode: "single",
     source: ownerRepo,
     cache_dir: pathResolve(cache),
     action,
     skills,
     needs_choice: skills.length > 1,
+  });
+}
+
+function cmdListCached(): never {
+  const repos = listCachedRepos();
+  const root = cacheRoot();
+  const rootStr = existsSync(root) ? pathResolve(root) : root;
+
+  const skillsOut: JsonPayload[] = [];
+  for (const ownerRepo of repos) {
+    const cache = cacheDirFor(ownerRepo);
+    if (!hasCache(cache)) continue;
+    for (const s of discoverSkills(cache)) {
+      skillsOut.push({
+        source: ownerRepo,
+        name: s.name,
+        description: s.description,
+        path: s.path,
+        dir: s.dir,
+        // Unambiguous pick key for agents / users
+        ref: `${ownerRepo}@${s.name}`,
+      });
+    }
+  }
+
+  if (!skillsOut.length) {
+    emit({
+      ok: true,
+      mode: "cached",
+      message: "No cached skills found under $TEMP/skills.",
+      cache_root: rootStr,
+      count: 0,
+      skills: [],
+    });
+  }
+
+  emit({
+    ok: true,
+    mode: "cached",
+    cache_root: rootStr,
+    count: skillsOut.length,
+    skills: skillsOut,
   });
 }
 
@@ -675,7 +723,8 @@ function main(argv: string[]): void {
   if (argv.length < 3) {
     fail(
       "Usage: skill_run.ts <ensure|update|list|resolve> [owner/repo[@skill]]\n" +
-        "  update with no source refreshes every previously cached repo.",
+        "  update with no source refreshes every previously cached repo.\n" +
+        "  list with no source lists every skill under previously cached repos.",
     );
   }
   const cmd = argv[2].toLowerCase();
@@ -687,7 +736,6 @@ function main(argv: string[]): void {
   } else if (cmd === "update") {
     cmdUpdate(source);
   } else if (cmd === "list") {
-    if (!source) fail("Usage: skill_run.ts list <owner/repo>");
     cmdList(source);
   } else if (cmd === "resolve") {
     if (!source) fail("Usage: skill_run.ts resolve <owner/repo[@skill]>");

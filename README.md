@@ -16,6 +16,7 @@ Use `-g` for a user-global install, or `--agent grok` / `--agent '*'` as needed.
 In an agent that supports skills (e.g. Grok Build):
 
 ```text
+/skill
 /skill <owner/repo> [args...]
 /skill <owner/repo@skill-name> [args...]
 /skill update <owner/repo>
@@ -24,6 +25,7 @@ In an agent that supports skills (e.g. Grok Build):
 
 | Form | Behavior |
 |------|----------|
+| *(no args)* | List every skill in the ephemeral cache; ask which to run (optional args) |
 | `owner/repo` | Download (or reuse cache); if one skill → run it; if many → ask which |
 | `owner/repo@skill-name` | Run that skill; remaining tokens are skill args |
 | `update owner/repo` | Refresh the whole repo cache only (no skill execution) |
@@ -34,6 +36,7 @@ Also accepts GitHub HTTPS / `git@` URLs (normalized to `owner/repo`).
 ### Examples
 
 ```text
+/skill
 /skill microsoft/playwright-cli
 /skill vercel-labs/agent-skills
 /skill vercel-labs/agent-skills@web-design-guidelines
@@ -48,17 +51,20 @@ Also accepts GitHub HTTPS / `git@` URLs (normalized to `owner/repo`).
 2. Discovers skills in common layouts (`skills/`, `.agents/skills/`, root `SKILL.md`, etc.).
 3. Loads the selected `SKILL.md` and runs it as if it were installed — **without** copying into permanent skill roots.
 
+Bare `/skill` does not clone: it lists whatever is already under `$TEMP/skills/` and prompts for a pick.
+
 Cache is reused across runs; refresh with `/skill update <owner/repo>` or `/skill update` (all cached).
 
 Helpers (JSON on stdout; update-all progress on stderr):
 
 ```bash
 python scripts/skill_run.py resolve owner/repo[@skill]
-python scripts/skill_run.py update              # all cached repos
+python scripts/skill_run.py list                 # all cached skills
+python scripts/skill_run.py update               # all cached repos
 # or: npx --yes tsx scripts/skill_run.ts …
 ```
 
-Commands: `ensure`, `update` (optional source), `list`, `resolve`. Prefer `gh repo clone`, fall back to `git clone --depth 1`.
+Commands: `ensure`, `update` (optional source), `list` (optional source), `resolve`. Prefer `gh repo clone`, fall back to `git clone --depth 1`.
 
 ## Requirements
 
