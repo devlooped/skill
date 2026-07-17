@@ -4,11 +4,13 @@
  *
  * Usage:
  *   skill_run.ts ensure  <owner/repo>
- *   skill_run.ts update  <owner/repo[@skill]>
+ *   skill_run.ts update  [<owner/repo[@skill]>]
  *   skill_run.ts list    <owner/repo>
  *   skill_run.ts resolve <owner/repo[@skill]>
  *
  * Prints JSON on stdout. Exit 0 on success, 1 on error.
+ * Bare `update` (no source) refreshes every previously cached repo
+ * and prints progress on stderr.
  */
 
 import { spawnSync } from "node:child_process";
@@ -113,6 +115,44 @@ function cacheDirFor(ownerRepo: string): string {
   return join(cacheRoot(), ownerRepo.replace("/", "__"));
 }
 
+/** Reverse cache folder name ``owner__repo`` → ``owner/repo``. */
+function ownerRepoFromCacheDir(cache: string): string | null {
+  const name = cache.split(/[/\\]/).pop() || "";
+  if (!name.includes("__")) return null;
+  const idx = name.indexOf("__");
+  const owner = name.slice(0, idx);
+  const repo = name.slice(idx + 2);
+  if (!owner || !repo) return null;
+  return `${owner}/${repo}`;
+}
+
+/** Return owner/repo strings for every non-empty cache under $TEMP/skills. */
+function listCachedRepos(): string[] {
+  const root = cacheRoot();
+  if (!existsSync(root)) return [];
+  let children: string[] = [];
+  try {
+    children = readdirSync(root).sort((a, b) =>
+      a.toLowerCase().localeCompare(b.toLowerCase()),
+    );
+  } catch {
+    return [];
+  }
+  const repos: string[] = [];
+  for (const name of children) {
+    const child = join(root, name);
+    if (!hasCache(child)) continue;
+    const ownerRepo = ownerRepoFromCacheDir(child);
+    if (ownerRepo) repos.push(ownerRepo);
+  }
+  return repos;
+}
+
+/** Human-readable progress on stderr (keeps stdout JSON-clean). */
+function progress(msg: string): void {
+  process.stderr.write(msg + "\n");
+}
+
 function which(cmd: string): string | null {
   const isWin = process.platform === "win32";
   const checker = isWin ? "where" : "which";
@@ -158,10 +198,35 @@ function hasCache(cache: string): boolean {
   }
 }
 
-function cloneRepo(ownerRepo: string, cache: string): string {
+/** Best-effort recursive delete. Returns error message or null on success. */
+function removeDir(path: string): string | null {
+  if (!existsSync(path)) return null;
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch {
+    /* try fallback below */
+  }
+  if (!existsSync(path)) return null;
+
+  if (process.platform === "win32") {
+    const result = runCmd(["cmd", "/c", "rmdir", "/s", "/q", path]);
+    if (!existsSync(path)) return null;
+    const detail = (result.stderr || result.stdout || "").trim();
+    return detail || `Could not remove ${path}`;
+  }
+  return `Could not remove ${path}`;
+}
+
+/** Clone into cache. Returns method ('gh'|'git') or 'error: …'. */
+function softCloneRepo(ownerRepo: string, cache: string): string {
   mkdirSync(pathResolve(cache, ".."), { recursive: true });
   if (existsSync(cache)) {
-    rmSync(cache, { recursive: true, force: true });
+    const err = removeDir(cache);
+    if (err || existsSync(cache)) {
+      return (
+        `error: Failed to clear cache dir ${cache}` + (err ? `: ${err}` : "")
+      );
+    }
   }
 
   const gh = which("gh");
@@ -181,22 +246,30 @@ function cloneRepo(ownerRepo: string, cache: string): string {
 
   const git = which("git");
   if (!git) {
-    fail(
-      "Neither 'gh' nor 'git' is available. Install GitHub CLI (gh) or git to download skills.",
-      { source: ownerRepo },
+    return (
+      "error: Neither 'gh' nor 'git' is available. " +
+      "Install GitHub CLI (gh) or git to download skills."
     );
   }
 
   const url = `https://github.com/${ownerRepo}.git`;
-  const result = runCmd([git!, "clone", "--depth", "1", url, cache]);
+  const result = runCmd([git, "clone", "--depth", "1", url, cache]);
   if (result.status !== 0 || !hasCache(cache)) {
     const detail = (result.stderr || result.stdout || "").trim();
-    fail(
-      `Failed to clone ${ownerRepo}. ${detail || "Unknown error"}. For private repos, run: gh auth login`,
-      { source: ownerRepo },
+    return (
+      `error: Failed to clone ${ownerRepo}. ${detail || "Unknown error"}. ` +
+      "For private repos, run: gh auth login"
     );
   }
   return "git";
+}
+
+function cloneRepo(ownerRepo: string, cache: string): string {
+  const method = softCloneRepo(ownerRepo, cache);
+  if (method.startsWith("error:")) {
+    fail(method.slice("error:".length).trim(), { source: ownerRepo });
+  }
+  return method;
 }
 
 function ensureRepo(ownerRepo: string): { cache: string; action: string } {
@@ -206,17 +279,41 @@ function ensureRepo(ownerRepo: string): { cache: string; action: string } {
   return { cache, action: `cloned:${method}` };
 }
 
-function updateRepo(ownerRepo: string): { cache: string; action: string } {
+function softUpdateRepo(
+  ownerRepo: string,
+): { cache: string | null; action: string | null; error: string | null } {
   const cache = cacheDirFor(ownerRepo);
   const git = which("git");
 
   if (hasCache(cache) && existsSync(join(cache, ".git")) && git) {
     const result = runCmd([git, "pull", "--ff-only"], cache);
-    if (result.status === 0) return { cache, action: "pulled" };
+    if (result.status === 0) return { cache, action: "pulled", error: null };
   }
 
-  const method = cloneRepo(ownerRepo, cache);
-  return { cache, action: `recloned:${method}` };
+  try {
+    const method = softCloneRepo(ownerRepo, cache);
+    if (method.startsWith("error:")) {
+      return {
+        cache,
+        action: null,
+        error: method.slice("error:".length).trim(),
+      };
+    }
+    return { cache, action: `recloned:${method}`, error: null };
+  } catch (e) {
+    return { cache, action: null, error: String(e) };
+  }
+}
+
+function updateRepo(ownerRepo: string): { cache: string; action: string } {
+  const { cache, action, error } = softUpdateRepo(ownerRepo);
+  if (error !== null) {
+    fail(error, {
+      source: ownerRepo,
+      cache_dir: cache ? pathResolve(cache) : null,
+    });
+  }
+  return { cache: cache!, action: action! };
 }
 
 // ---------------------------------------------------------------------------
@@ -425,15 +522,83 @@ function cmdEnsure(sourceRaw: string): never {
   });
 }
 
-function cmdUpdate(sourceRaw: string): never {
-  const { ownerRepo } = normalizeSource(sourceRaw);
+function cmdUpdate(sourceRaw: string | null): never {
+  if (sourceRaw === null || !sourceRaw.trim()) {
+    cmdUpdateAll();
+  }
+
+  const { ownerRepo } = normalizeSource(sourceRaw!);
   const { cache, action } = updateRepo(ownerRepo);
   emit({
     ok: true,
+    mode: "single",
     source: ownerRepo,
     cache_dir: pathResolve(cache),
     action,
   });
+}
+
+function cmdUpdateAll(): never {
+  const repos = listCachedRepos();
+  const root = cacheRoot();
+  const rootStr = existsSync(root) ? pathResolve(root) : root;
+
+  if (!repos.length) {
+    progress("No cached skill repos found.");
+    emit({
+      ok: true,
+      mode: "all",
+      message: "No cached skill repos found under $TEMP/skills.",
+      cache_root: rootStr,
+      updated: 0,
+      failed: 0,
+      results: [],
+    });
+  }
+
+  const total = repos.length;
+  progress(`Updating ${total} cached skill repo(s)…`);
+  const results: JsonPayload[] = [];
+  let failed = 0;
+
+  for (let i = 0; i < total; i++) {
+    const ownerRepo = repos[i];
+    const n = i + 1;
+    progress(`[${n}/${total}] ${ownerRepo} …`);
+    const { cache, action, error } = softUpdateRepo(ownerRepo);
+    if (error !== null) {
+      failed++;
+      results.push({
+        ok: false,
+        source: ownerRepo,
+        cache_dir: cache ? pathResolve(cache) : null,
+        message: error,
+      });
+      progress(`[${n}/${total}] ${ownerRepo} → error: ${error}`);
+      continue;
+    }
+    results.push({
+      ok: true,
+      source: ownerRepo,
+      cache_dir: pathResolve(cache!),
+      action,
+    });
+    progress(`[${n}/${total}] ${ownerRepo} → ${action}`);
+  }
+
+  const updated = total - failed;
+  progress(`Done: ${updated} updated, ${failed} failed (of ${total}).`);
+  emit(
+    {
+      ok: failed === 0,
+      mode: "all",
+      cache_root: rootStr,
+      updated,
+      failed,
+      results,
+    },
+    failed === 0 ? 0 : 1,
+  );
 }
 
 function cmdList(sourceRaw: string): never {
@@ -506,19 +671,30 @@ function cmdResolve(sourceRaw: string): never {
 }
 
 function main(argv: string[]): void {
-  if (argv.length < 4) {
-    fail("Usage: skill_run.ts <ensure|update|list|resolve> <owner/repo[@skill]>");
+  // argv: [node, script, cmd, source?] when run via node/tsx
+  if (argv.length < 3) {
+    fail(
+      "Usage: skill_run.ts <ensure|update|list|resolve> [owner/repo[@skill]]\n" +
+        "  update with no source refreshes every previously cached repo.",
+    );
   }
-  // argv: [node, script, cmd, source] when run via node/tsx
-  // With tsx: process.argv[0]=node, [1]=script, [2]=cmd, [3]=source
   const cmd = argv[2].toLowerCase();
-  const source = argv[3];
+  const source = argv.length >= 4 ? argv[3] : null;
 
-  if (cmd === "ensure") cmdEnsure(source);
-  else if (cmd === "update") cmdUpdate(source);
-  else if (cmd === "list") cmdList(source);
-  else if (cmd === "resolve") cmdResolve(source);
-  else fail(`Unknown command '${cmd}'. Use ensure, update, list, or resolve.`);
+  if (cmd === "ensure") {
+    if (!source) fail("Usage: skill_run.ts ensure <owner/repo>");
+    cmdEnsure(source);
+  } else if (cmd === "update") {
+    cmdUpdate(source);
+  } else if (cmd === "list") {
+    if (!source) fail("Usage: skill_run.ts list <owner/repo>");
+    cmdList(source);
+  } else if (cmd === "resolve") {
+    if (!source) fail("Usage: skill_run.ts resolve <owner/repo[@skill]>");
+    cmdResolve(source);
+  } else {
+    fail(`Unknown command '${cmd}'. Use ensure, update, list, or resolve.`);
+  }
 }
 
 main(process.argv);

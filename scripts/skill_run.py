@@ -3,11 +3,13 @@
 
 Usage:
     skill_run.py ensure  <owner/repo>
-    skill_run.py update  <owner/repo[@skill]>
+    skill_run.py update  [<owner/repo[@skill]>]
     skill_run.py list    <owner/repo>
     skill_run.py resolve <owner/repo[@skill]>
 
 Prints JSON on stdout. Exit 0 on success, 1 on error.
+With bare `update` (no source), refreshes every previously cached repo
+and prints progress on stderr.
 """
 
 from __future__ import annotations
@@ -108,6 +110,42 @@ def cache_dir_for(owner_repo: str) -> Path:
     return cache_root() / safe
 
 
+def owner_repo_from_cache_dir(cache: Path) -> str | None:
+    """Reverse cache folder name ``owner__repo`` → ``owner/repo``."""
+    name = cache.name
+    if "__" not in name:
+        return None
+    owner, repo = name.split("__", 1)
+    if not owner or not repo:
+        return None
+    return f"{owner}/{repo}"
+
+
+def list_cached_repos() -> list[str]:
+    """Return owner/repo strings for every non-empty cache under $TEMP/skills."""
+    root = cache_root()
+    if not root.is_dir():
+        return []
+    repos: list[str] = []
+    try:
+        children = sorted(root.iterdir(), key=lambda p: p.name.lower())
+    except OSError:
+        return []
+    for child in children:
+        if not child.is_dir() or not has_cache(child):
+            continue
+        owner_repo = owner_repo_from_cache_dir(child)
+        if owner_repo:
+            repos.append(owner_repo)
+    return repos
+
+
+def progress(msg: str) -> None:
+    """Human-readable progress on stderr (keeps stdout JSON-clean)."""
+    sys.stderr.write(msg + "\n")
+    sys.stderr.flush()
+
+
 def which(cmd: str) -> str | None:
     return shutil.which(cmd)
 
@@ -141,35 +179,11 @@ def has_cache(cache: Path) -> bool:
 
 
 def clone_repo(owner_repo: str, cache: Path) -> str:
-    """Clone into cache. Returns method used: 'gh' or 'git'."""
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    if cache.exists():
-        shutil.rmtree(cache, ignore_errors=True)
-
-    gh = which("gh")
-    if gh:
-        result = run_cmd([gh, "repo", "clone", owner_repo, str(cache), "--", "--depth", "1"])
-        if result.returncode == 0 and has_cache(cache):
-            return "gh"
-        # fall through to git on gh failure
-
-    git = which("git")
-    if not git:
-        fail(
-            "Neither 'gh' nor 'git' is available. Install GitHub CLI (gh) or git to download skills.",
-            source=owner_repo,
-        )
-
-    url = f"https://github.com/{owner_repo}.git"
-    result = run_cmd([git, "clone", "--depth", "1", url, str(cache)])
-    if result.returncode != 0 or not has_cache(cache):
-        detail = (result.stderr or result.stdout or "").strip()
-        fail(
-            f"Failed to clone {owner_repo}. {detail or 'Unknown error'}. "
-            "For private repos, run: gh auth login",
-            source=owner_repo,
-        )
-    return "git"
+    """Clone into cache. Returns method used: 'gh' or 'git'. Exits on failure."""
+    method = soft_clone_repo(owner_repo, cache)
+    if method.startswith("error:"):
+        fail(method[len("error:") :].strip(), source=owner_repo)
+    return method
 
 
 def ensure_repo(owner_repo: str) -> tuple[Path, str]:
@@ -182,18 +196,102 @@ def ensure_repo(owner_repo: str) -> tuple[Path, str]:
 
 
 def update_repo(owner_repo: str) -> tuple[Path, str]:
-    """Refresh whole-repo cache. Strips skill selection — always repo-level."""
+    """Refresh whole-repo cache. Strips skill selection — always repo-level.
+
+    On failure calls fail() (exits). Prefer soft_update_repo for batch mode.
+    """
+    cache, action, err = soft_update_repo(owner_repo)
+    if err is not None:
+        fail(err, source=owner_repo, cache_dir=str(cache.resolve()) if cache else None)
+    assert cache is not None and action is not None
+    return cache, action
+
+
+def soft_update_repo(owner_repo: str) -> tuple[Path | None, str | None, str | None]:
+    """Like update_repo but returns (cache, action, error) instead of exiting."""
     cache = cache_dir_for(owner_repo)
     git = which("git")
 
     if has_cache(cache) and (cache / ".git").exists() and git:
         result = run_cmd([git, "pull", "--ff-only"], cwd=cache)
         if result.returncode == 0:
-            return cache, "pulled"
+            return cache, "pulled", None
         # fall through to re-clone
 
-    method = clone_repo(owner_repo, cache)
-    return cache, f"recloned:{method}"
+    try:
+        method = soft_clone_repo(owner_repo, cache)
+        if method.startswith("error:"):
+            return cache, None, method[len("error:") :].strip()
+        return cache, f"recloned:{method}", None
+    except Exception as e:  # noqa: BLE001
+        return cache, None, str(e)
+
+
+def remove_dir(path: Path) -> str | None:
+    """Best-effort recursive delete. Returns error message or None on success."""
+    if not path.exists():
+        return None
+
+    def _onerror(func: Any, p: str, _exc: Any) -> None:
+        try:
+            os.chmod(p, 0o700)
+            func(p)
+        except OSError:
+            pass
+
+    try:
+        shutil.rmtree(path, onerror=_onerror)
+    except OSError:
+        pass
+
+    if not path.exists():
+        return None
+
+    # Windows fallback: cmd rmdir (handles stubborn dirs better than shutil alone)
+    if os.name == "nt":
+        result = run_cmd(["cmd", "/c", "rmdir", "/s", "/q", str(path)])
+        if not path.exists():
+            return None
+        detail = (result.stderr or result.stdout or "").strip()
+        return detail or f"Could not remove {path}"
+
+    return f"Could not remove {path}"
+
+
+def soft_clone_repo(owner_repo: str, cache: Path) -> str:
+    """Clone into cache. Returns method ('gh'|'git') or 'error: …'."""
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    if cache.exists():
+        err = remove_dir(cache)
+        if err or cache.exists():
+            return (
+                f"error: Failed to clear cache dir {cache}"
+                + (f": {err}" if err else "")
+            )
+
+    gh = which("gh")
+    if gh:
+        result = run_cmd([gh, "repo", "clone", owner_repo, str(cache), "--", "--depth", "1"])
+        if result.returncode == 0 and has_cache(cache):
+            return "gh"
+        # fall through to git on gh failure
+
+    git = which("git")
+    if not git:
+        return (
+            "error: Neither 'gh' nor 'git' is available. "
+            "Install GitHub CLI (gh) or git to download skills."
+        )
+
+    url = f"https://github.com/{owner_repo}.git"
+    result = run_cmd([git, "clone", "--depth", "1", url, str(cache)])
+    if result.returncode != 0 or not has_cache(cache):
+        detail = (result.stderr or result.stdout or "").strip()
+        return (
+            f"error: Failed to clone {owner_repo}. {detail or 'Unknown error'}. "
+            "For private repos, run: gh auth login"
+        )
+    return "git"
 
 
 # ---------------------------------------------------------------------------
@@ -372,16 +470,89 @@ def cmd_ensure(source_raw: str) -> None:
     )
 
 
-def cmd_update(source_raw: str) -> None:
+def cmd_update(source_raw: str | None) -> None:
+    """Update one repo, or every cached repo when source is omitted."""
+    if source_raw is None or not source_raw.strip():
+        cmd_update_all()
+        return
+
     owner_repo, _ = normalize_source(source_raw)  # strips @skill
     cache, action = update_repo(owner_repo)
     emit(
         {
             "ok": True,
+            "mode": "single",
             "source": owner_repo,
             "cache_dir": str(cache.resolve()),
             "action": action,
         }
+    )
+
+
+def cmd_update_all() -> None:
+    """Refresh every previously cached skill repo; progress on stderr."""
+    repos = list_cached_repos()
+    root = cache_root()
+    root_str = str(root.resolve()) if root.exists() else str(root)
+
+    if not repos:
+        progress("No cached skill repos found.")
+        emit(
+            {
+                "ok": True,
+                "mode": "all",
+                "message": "No cached skill repos found under $TEMP/skills.",
+                "cache_root": root_str,
+                "updated": 0,
+                "failed": 0,
+                "results": [],
+            }
+        )
+
+    total = len(repos)
+    progress(f"Updating {total} cached skill repo(s)…")
+    results: list[dict[str, Any]] = []
+    failed = 0
+
+    for i, owner_repo in enumerate(repos, start=1):
+        progress(f"[{i}/{total}] {owner_repo} …")
+        cache, action, err = soft_update_repo(owner_repo)
+        if err is not None:
+            failed += 1
+            results.append(
+                {
+                    "ok": False,
+                    "source": owner_repo,
+                    "cache_dir": str(cache.resolve()) if cache else None,
+                    "message": err,
+                }
+            )
+            progress(f"[{i}/{total}] {owner_repo} → error: {err}")
+            continue
+
+        assert cache is not None and action is not None
+        results.append(
+            {
+                "ok": True,
+                "source": owner_repo,
+                "cache_dir": str(cache.resolve()),
+                "action": action,
+            }
+        )
+        progress(f"[{i}/{total}] {owner_repo} → {action}")
+
+    updated = total - failed
+    progress(f"Done: {updated} updated, {failed} failed (of {total}).")
+    emit(
+        {
+            "ok": failed == 0,
+            "mode": "all",
+            "cache_root": root_str,
+            "updated": updated,
+            "failed": failed,
+            "results": results,
+        },
+        exit_code=0 if failed == 0 else 1,
     )
 
 
@@ -460,22 +631,30 @@ def cmd_resolve(source_raw: str) -> None:
 
 def usage() -> None:
     fail(
-        "Usage: skill_run.py <ensure|update|list|resolve> <owner/repo[@skill]>",
+        "Usage: skill_run.py <ensure|update|list|resolve> [owner/repo[@skill]]\n"
+        "  update with no source refreshes every previously cached repo.",
     )
 
 
 def main(argv: list[str]) -> None:
-    if len(argv) < 3:
+    if len(argv) < 2:
         usage()
     cmd = argv[1].lower()
-    source = argv[2]
+    source = argv[2] if len(argv) >= 3 else None
+
     if cmd == "ensure":
+        if not source:
+            fail("Usage: skill_run.py ensure <owner/repo>")
         cmd_ensure(source)
     elif cmd == "update":
         cmd_update(source)
     elif cmd == "list":
+        if not source:
+            fail("Usage: skill_run.py list <owner/repo>")
         cmd_list(source)
     elif cmd == "resolve":
+        if not source:
+            fail("Usage: skill_run.py resolve <owner/repo[@skill]>")
         cmd_resolve(source)
     else:
         fail(f"Unknown command '{cmd}'. Use ensure, update, list, or resolve.")
