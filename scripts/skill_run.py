@@ -290,7 +290,7 @@ def soft_clone_repo(owner_repo: str, cache: Path, clone_url: str | None = None) 
 
     gh = which("gh")
     if gh:
-        if clone_url and "gist.github.com" in clone_url:
+        if clone_url and clone_url.startswith("https://gist.github.com/"):
             # For gists, fall straight through to git clone with the explicit URL.
             # gh auth login configures git credentials, so git clone works for
             # secret gists too.

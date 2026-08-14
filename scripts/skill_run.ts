@@ -252,7 +252,7 @@ function softCloneRepo(
   }
 
   const gh = which("gh");
-  if (gh && !(cloneUrl && cloneUrl.includes("gist.github.com"))) {
+  if (gh && !(cloneUrl && cloneUrl.startsWith("https://gist.github.com/"))) {
     // For gists, skip gh repo clone and use git clone with the explicit URL.
     // gh auth login configures git credentials, so git clone works for
     // secret gists too.
