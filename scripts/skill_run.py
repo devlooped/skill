@@ -65,7 +65,7 @@ def normalize_source(raw: str) -> tuple[str, str | None, str | None]:
 
     Accepts owner/repo, owner/repo@skill, GitHub HTTPS / git@ URLs, and
     GitHub Gist URLs (https://gist.github.com/user/gist_id).  The
-    clone_url is non-None only for gist sources.
+    clone_url is non-None for gist and explicit HTTPS/SSH sources.
     """
     s = raw.strip().rstrip("/")
     skill: str | None = None
@@ -86,7 +86,7 @@ def normalize_source(raw: str) -> tuple[str, str | None, str | None]:
     if m:
         user = m.group(1)
         gist_id = m.group(2)
-        return f"{user}/{gist_id}", skill, f"https://gist.github.com/{gist_id}.git"
+        return f"{user}/{gist_id}", skill, f"https://gist.github.com/{user}/{gist_id}"
 
     # https://github.com/owner/repo[/tree/...] or https://github.com/owner/repo.git
     m = re.match(
@@ -290,16 +290,10 @@ def soft_clone_repo(owner_repo: str, cache: Path, clone_url: str | None = None) 
 
     gh = which("gh")
     if gh:
-        if clone_url and clone_url.startswith("https://gist.github.com/"):
-            # For gists, fall straight through to git clone with the explicit URL.
-            # gh auth login configures git credentials, so git clone works for
-            # secret gists too.
-            pass
-        else:
-            result = run_cmd([gh, "repo", "clone", owner_repo, str(cache), "--", "--depth", "1"])
-            if result.returncode == 0 and has_cache(cache):
-                return "gh"
-        # fall through to git on gh failure or gist source
+        result = run_cmd([gh, "repo", "clone", owner_repo, str(cache), "--", "--depth", "1"])
+        if result.returncode == 0 and has_cache(cache):
+            return "gh"
+        # fall through to git on gh failure
 
     git = which("git")
     if not git:

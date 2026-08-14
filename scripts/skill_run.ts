@@ -96,7 +96,7 @@ function normalizeSource(raw: string): {
     return {
       ownerRepo: `${user}/${gistId}`,
       skill,
-      cloneUrl: `https://gist.github.com/${gistId}.git`,
+      cloneUrl: `https://gist.github.com/${user}/${gistId}`,
     };
   }
 
@@ -252,10 +252,7 @@ function softCloneRepo(
   }
 
   const gh = which("gh");
-  if (gh && !(cloneUrl && cloneUrl.startsWith("https://gist.github.com/"))) {
-    // For gists, skip gh repo clone and use git clone with the explicit URL.
-    // gh auth login configures git credentials, so git clone works for
-    // secret gists too.
+  if (gh) {
     const result = runCmd([gh, "repo", "clone", ownerRepo, cache, "--", "--depth", "1"]);
     if (result.status === 0 && hasCache(cache)) return "gh";
   }
