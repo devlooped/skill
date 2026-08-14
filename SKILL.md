@@ -33,7 +33,7 @@ Download a skill repo into a **temporary** cache, pick a skill, load its `SKILL.
 
 Skill selection uses **`@` only** (npx skills style). There is no separate skill-name positional argument.
 
-Also accept GitHub HTTPS / `git@` URLs; normalize to `owner/repo`.
+Also accept GitHub HTTPS / `git@` URLs and GitHub Gist URLs (`https://gist.github.com/user/id`); normalize to `owner/repo`.
 
 ## Paths
 
