@@ -88,16 +88,16 @@ function normalizeSource(raw: string): {
     }
   }
 
-  // https://gist.github.com/user/gist_id
-  let m = s.match(/^(?:https?:\/\/)?gist\.github\.com\/([^/]+)\/([A-Za-z0-9]+)/i);
+  // https://gist.github.com/user/gist_id  or  https://gist.github.com/gist_id.git
+  let m = s.match(/^(?:https?:\/\/)?gist\.github\.com\/(?:([^/]+)\/)?([A-Za-z0-9]+)(?:\.git)?/i);
   if (m) {
-    const user = m[1];
+    const user = m[1] ?? null;
     const gistId = m[2];
-    return {
-      ownerRepo: `${user}/${gistId}`,
-      skill,
-      cloneUrl: `https://gist.github.com/${user}/${gistId}`,
-    };
+    const ownerRepo = user ? `${user}/${gistId}` : gistId;
+    const cloneUrl = user
+      ? `https://gist.github.com/${user}/${gistId}`
+      : `https://gist.github.com/${gistId}.git`;
+    return { ownerRepo, skill, cloneUrl };
   }
 
   m = s.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/]+)\/([^/#?]+)/i);
@@ -119,7 +119,7 @@ function normalizeSource(raw: string): {
 
   fail(
     `Invalid source '${raw}'. Expected owner/repo, owner/repo@skill, a GitHub URL, ` +
-      "or a GitHub Gist URL (https://gist.github.com/user/id).",
+      "or a GitHub Gist URL (https://gist.github.com/user/id or https://gist.github.com/id.git).",
   );
 }
 

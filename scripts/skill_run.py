@@ -64,8 +64,9 @@ def normalize_source(raw: str) -> tuple[str, str | None, str | None]:
     """Return (owner/repo, optional_skill_name, optional_clone_url).
 
     Accepts owner/repo, owner/repo@skill, GitHub HTTPS / git@ URLs, and
-    GitHub Gist URLs (https://gist.github.com/user/gist_id).  The
-    clone_url is non-None for gist and explicit HTTPS/SSH sources.
+    GitHub Gist URLs (https://gist.github.com/user/gist_id or
+    https://gist.github.com/gist_id.git).  The clone_url is non-None for
+    gist and explicit HTTPS/SSH sources.
     """
     s = raw.strip().rstrip("/")
     skill: str | None = None
@@ -77,16 +78,18 @@ def normalize_source(raw: str) -> tuple[str, str | None, str | None]:
             s = base
             skill = maybe_skill.strip() or None
 
-    # https://gist.github.com/user/gist_id
+    # https://gist.github.com/user/gist_id  or  https://gist.github.com/gist_id.git
     m = re.match(
-        r"^(?:https?://)?gist\.github\.com/([^/]+)/([A-Za-z0-9]+)",
+        r"^(?:https?://)?gist\.github\.com/(?:([^/]+)/)?([A-Za-z0-9]+)(?:\.git)?",
         s,
         re.IGNORECASE,
     )
     if m:
         user = m.group(1)
         gist_id = m.group(2)
-        return f"{user}/{gist_id}", skill, f"https://gist.github.com/{user}/{gist_id}"
+        owner_repo = f"{user}/{gist_id}" if user else gist_id
+        clone_url = f"https://gist.github.com/{user}/{gist_id}" if user else f"https://gist.github.com/{gist_id}.git"
+        return owner_repo, skill, clone_url
 
     # https://github.com/owner/repo[/tree/...] or https://github.com/owner/repo.git
     m = re.match(
@@ -113,7 +116,8 @@ def normalize_source(raw: str) -> tuple[str, str | None, str | None]:
 
     fail(
         f"Invalid source '{raw}'. Expected owner/repo, owner/repo@skill, "
-        "a GitHub URL, or a GitHub Gist URL (https://gist.github.com/user/id)."
+        "a GitHub URL, or a GitHub Gist URL (https://gist.github.com/user/id "
+        "or https://gist.github.com/id.git)."
     )
 
 
