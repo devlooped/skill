@@ -60,10 +60,12 @@ def fail(message: str, **extra: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def normalize_source(raw: str) -> tuple[str, str | None]:
-    """Return (owner/repo, optional_skill_name).
+def normalize_source(raw: str) -> tuple[str, str | None, str | None]:
+    """Return (owner/repo, optional_skill_name, optional_clone_url).
 
-    Accepts owner/repo, owner/repo@skill, and GitHub HTTPS URLs.
+    Accepts owner/repo, owner/repo@skill, GitHub HTTPS / git@ URLs, and
+    GitHub Gist URLs (https://gist.github.com/user/gist_id).  The
+    clone_url is non-None only for gist sources.
     """
     s = raw.strip().rstrip("/")
     skill: str | None = None
@@ -74,6 +76,17 @@ def normalize_source(raw: str) -> tuple[str, str | None]:
         if "/" in base and maybe_skill and "/" not in maybe_skill:
             s = base
             skill = maybe_skill.strip() or None
+
+    # https://gist.github.com/user/gist_id
+    m = re.match(
+        r"^(?:https?://)?gist\.github\.com/([^/]+)/([A-Za-z0-9]+)",
+        s,
+        re.IGNORECASE,
+    )
+    if m:
+        user = m.group(1)
+        gist_id = m.group(2)
+        return f"{user}/{gist_id}", skill, f"https://gist.github.com/{gist_id}.git"
 
     # https://github.com/owner/repo[/tree/...] or https://github.com/owner/repo.git
     m = re.match(
@@ -86,19 +99,22 @@ def normalize_source(raw: str) -> tuple[str, str | None]:
         repo = m.group(2)
         if repo.endswith(".git"):
             repo = repo[: -len(".git")]
-        return f"{owner}/{repo}", skill
+        return f"{owner}/{repo}", skill, None
 
     # git@github.com:owner/repo.git
     m = re.match(r"^git@github\.com:([^/]+)/([^/#?]+?)(?:\.git)?$", s, re.IGNORECASE)
     if m:
-        return f"{m.group(1)}/{m.group(2)}", skill
+        return f"{m.group(1)}/{m.group(2)}", skill, None
 
     # owner/repo
     m = re.match(r"^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$", s)
     if m:
-        return f"{m.group(1)}/{m.group(2)}", skill
+        return f"{m.group(1)}/{m.group(2)}", skill, None
 
-    fail(f"Invalid source '{raw}'. Expected owner/repo, owner/repo@skill, or a GitHub URL.")
+    fail(
+        f"Invalid source '{raw}'. Expected owner/repo, owner/repo@skill, "
+        "a GitHub URL, or a GitHub Gist URL (https://gist.github.com/user/id)."
+    )
 
 
 def cache_root() -> Path:
@@ -179,36 +195,38 @@ def has_cache(cache: Path) -> bool:
         return False
 
 
-def clone_repo(owner_repo: str, cache: Path) -> str:
+def clone_repo(owner_repo: str, cache: Path, clone_url: str | None = None) -> str:
     """Clone into cache. Returns method used: 'gh' or 'git'. Exits on failure."""
-    method = soft_clone_repo(owner_repo, cache)
+    method = soft_clone_repo(owner_repo, cache, clone_url)
     if method.startswith("error:"):
         fail(method[len("error:") :].strip(), source=owner_repo)
     return method
 
 
-def ensure_repo(owner_repo: str) -> tuple[Path, str]:
+def ensure_repo(owner_repo: str, clone_url: str | None = None) -> tuple[Path, str]:
     """Ensure cache exists. Returns (cache_dir, action)."""
     cache = cache_dir_for(owner_repo)
     if has_cache(cache):
         return cache, "cached"
-    method = clone_repo(owner_repo, cache)
+    method = clone_repo(owner_repo, cache, clone_url)
     return cache, f"cloned:{method}"
 
 
-def update_repo(owner_repo: str) -> tuple[Path, str]:
+def update_repo(owner_repo: str, clone_url: str | None = None) -> tuple[Path, str]:
     """Refresh whole-repo cache. Strips skill selection — always repo-level.
 
     On failure calls fail() (exits). Prefer soft_update_repo for batch mode.
     """
-    cache, action, err = soft_update_repo(owner_repo)
+    cache, action, err = soft_update_repo(owner_repo, clone_url)
     if err is not None:
         fail(err, source=owner_repo, cache_dir=str(cache.resolve()) if cache else None)
     assert cache is not None and action is not None
     return cache, action
 
 
-def soft_update_repo(owner_repo: str) -> tuple[Path | None, str | None, str | None]:
+def soft_update_repo(
+    owner_repo: str, clone_url: str | None = None
+) -> tuple[Path | None, str | None, str | None]:
     """Like update_repo but returns (cache, action, error) instead of exiting."""
     cache = cache_dir_for(owner_repo)
     git = which("git")
@@ -220,7 +238,7 @@ def soft_update_repo(owner_repo: str) -> tuple[Path | None, str | None, str | No
         # fall through to re-clone
 
     try:
-        method = soft_clone_repo(owner_repo, cache)
+        method = soft_clone_repo(owner_repo, cache, clone_url)
         if method.startswith("error:"):
             return cache, None, method[len("error:") :].strip()
         return cache, f"recloned:{method}", None
@@ -259,7 +277,7 @@ def remove_dir(path: Path) -> str | None:
     return f"Could not remove {path}"
 
 
-def soft_clone_repo(owner_repo: str, cache: Path) -> str:
+def soft_clone_repo(owner_repo: str, cache: Path, clone_url: str | None = None) -> str:
     """Clone into cache. Returns method ('gh'|'git') or 'error: …'."""
     cache.parent.mkdir(parents=True, exist_ok=True)
     if cache.exists():
@@ -272,7 +290,12 @@ def soft_clone_repo(owner_repo: str, cache: Path) -> str:
 
     gh = which("gh")
     if gh:
-        result = run_cmd([gh, "repo", "clone", owner_repo, str(cache), "--", "--depth", "1"])
+        if clone_url and "gist.github.com" in clone_url:
+            # Extract gist_id from clone_url (https://gist.github.com/<id>.git)
+            gist_id = clone_url.rstrip("/").removesuffix(".git").rsplit("/", 1)[-1]
+            result = run_cmd([gh, "gist", "clone", gist_id, str(cache)])
+        else:
+            result = run_cmd([gh, "repo", "clone", owner_repo, str(cache), "--", "--depth", "1"])
         if result.returncode == 0 and has_cache(cache):
             return "gh"
         # fall through to git on gh failure
@@ -284,7 +307,7 @@ def soft_clone_repo(owner_repo: str, cache: Path) -> str:
             "Install GitHub CLI (gh) or git to download skills."
         )
 
-    url = f"https://github.com/{owner_repo}.git"
+    url = clone_url or f"https://github.com/{owner_repo}.git"
     result = run_cmd([git, "clone", "--depth", "1", url, str(cache)])
     if result.returncode != 0 or not has_cache(cache):
         detail = (result.stderr or result.stdout or "").strip()
@@ -459,8 +482,8 @@ def discover_skills(cache: Path) -> list[dict[str, str]]:
 
 
 def cmd_ensure(source_raw: str) -> None:
-    owner_repo, _ = normalize_source(source_raw)
-    cache, action = ensure_repo(owner_repo)
+    owner_repo, _, clone_url = normalize_source(source_raw)
+    cache, action = ensure_repo(owner_repo, clone_url)
     emit(
         {
             "ok": True,
@@ -477,8 +500,8 @@ def cmd_update(source_raw: str | None) -> None:
         cmd_update_all()
         return
 
-    owner_repo, _ = normalize_source(source_raw)  # strips @skill
-    cache, action = update_repo(owner_repo)
+    owner_repo, _, clone_url = normalize_source(source_raw)  # strips @skill
+    cache, action = update_repo(owner_repo, clone_url)
     emit(
         {
             "ok": True,
@@ -563,8 +586,8 @@ def cmd_list(source_raw: str | None) -> None:
         cmd_list_cached()
         return
 
-    owner_repo, _ = normalize_source(source_raw)
-    cache, action = ensure_repo(owner_repo)
+    owner_repo, _, clone_url = normalize_source(source_raw)
+    cache, action = ensure_repo(owner_repo, clone_url)
     skills = discover_skills(cache)
     emit(
         {
@@ -628,8 +651,8 @@ def cmd_list_cached() -> None:
 
 
 def cmd_resolve(source_raw: str) -> None:
-    owner_repo, skill_name = normalize_source(source_raw)
-    cache, action = ensure_repo(owner_repo)
+    owner_repo, skill_name, clone_url = normalize_source(source_raw)
+    cache, action = ensure_repo(owner_repo, clone_url)
     skills = discover_skills(cache)
 
     if not skills:

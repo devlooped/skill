@@ -31,7 +31,7 @@ In an agent that supports skills (e.g. Grok Build):
 | `update owner/repo` | Refresh the whole repo cache only (no skill execution) |
 | `update` (no source) | Refresh every previously cached repo under `$TEMP/skills/` (progress on stderr) |
 
-Also accepts GitHub HTTPS / `git@` URLs (normalized to `owner/repo`).
+Also accepts GitHub HTTPS / `git@` URLs and GitHub Gist URLs (normalized to `owner/repo`).
 
 ### Examples
 
@@ -41,6 +41,7 @@ Also accepts GitHub HTTPS / `git@` URLs (normalized to `owner/repo`).
 /skill vercel-labs/agent-skills
 /skill vercel-labs/agent-skills@web-design-guidelines
 /skill vercel-labs/agent-skills@web-design-guidelines src/**/*.tsx
+/skill https://gist.github.com/octocat/abc123def456
 /skill update vercel-labs/agent-skills
 /skill update
 ```

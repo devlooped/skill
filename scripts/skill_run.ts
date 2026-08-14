@@ -70,7 +70,11 @@ function fail(message: string, extra: JsonPayload = {}): never {
 // Source / cache
 // ---------------------------------------------------------------------------
 
-function normalizeSource(raw: string): { ownerRepo: string; skill: string | null } {
+function normalizeSource(raw: string): {
+  ownerRepo: string;
+  skill: string | null;
+  cloneUrl: string | null;
+} {
   let s = raw.trim().replace(/\/+$/, "");
   let skill: string | null = null;
 
@@ -84,25 +88,38 @@ function normalizeSource(raw: string): { ownerRepo: string; skill: string | null
     }
   }
 
-  let m = s.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/]+)\/([^/#?]+)/i);
+  // https://gist.github.com/user/gist_id
+  let m = s.match(/^(?:https?:\/\/)?gist\.github\.com\/([^/]+)\/([A-Za-z0-9]+)/i);
+  if (m) {
+    const user = m[1];
+    const gistId = m[2];
+    return {
+      ownerRepo: `${user}/${gistId}`,
+      skill,
+      cloneUrl: `https://gist.github.com/${gistId}.git`,
+    };
+  }
+
+  m = s.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/]+)\/([^/#?]+)/i);
   if (m) {
     let repo = m[2];
     if (repo.endsWith(".git")) repo = repo.slice(0, -4);
-    return { ownerRepo: `${m[1]}/${repo}`, skill };
+    return { ownerRepo: `${m[1]}/${repo}`, skill, cloneUrl: null };
   }
 
   m = s.match(/^git@github\.com:([^/]+)\/([^/#?]+?)(?:\.git)?$/i);
   if (m) {
-    return { ownerRepo: `${m[1]}/${m[2]}`, skill };
+    return { ownerRepo: `${m[1]}/${m[2]}`, skill, cloneUrl: null };
   }
 
   m = s.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
   if (m) {
-    return { ownerRepo: `${m[1]}/${m[2]}`, skill };
+    return { ownerRepo: `${m[1]}/${m[2]}`, skill, cloneUrl: null };
   }
 
   fail(
-    `Invalid source '${raw}'. Expected owner/repo, owner/repo@skill, or a GitHub URL.`,
+    `Invalid source '${raw}'. Expected owner/repo, owner/repo@skill, a GitHub URL, ` +
+      "or a GitHub Gist URL (https://gist.github.com/user/id).",
   );
 }
 
@@ -219,7 +236,11 @@ function removeDir(path: string): string | null {
 }
 
 /** Clone into cache. Returns method ('gh'|'git') or 'error: …'. */
-function softCloneRepo(ownerRepo: string, cache: string): string {
+function softCloneRepo(
+  ownerRepo: string,
+  cache: string,
+  cloneUrl: string | null = null,
+): string {
   mkdirSync(pathResolve(cache, ".."), { recursive: true });
   if (existsSync(cache)) {
     const err = removeDir(cache);
@@ -232,16 +253,14 @@ function softCloneRepo(ownerRepo: string, cache: string): string {
 
   const gh = which("gh");
   if (gh) {
-    const result = runCmd([
-      gh,
-      "repo",
-      "clone",
-      ownerRepo,
-      cache,
-      "--",
-      "--depth",
-      "1",
-    ]);
+    let result: { status: number; stdout: string; stderr: string };
+    if (cloneUrl && cloneUrl.includes("gist.github.com")) {
+      // Extract gist_id from clone URL: https://gist.github.com/<id>.git
+      const gistId = cloneUrl.replace(/\.git$/, "").split("/").pop()!;
+      result = runCmd([gh, "gist", "clone", gistId, cache]);
+    } else {
+      result = runCmd([gh, "repo", "clone", ownerRepo, cache, "--", "--depth", "1"]);
+    }
     if (result.status === 0 && hasCache(cache)) return "gh";
   }
 
@@ -253,7 +272,7 @@ function softCloneRepo(ownerRepo: string, cache: string): string {
     );
   }
 
-  const url = `https://github.com/${ownerRepo}.git`;
+  const url = cloneUrl ?? `https://github.com/${ownerRepo}.git`;
   const result = runCmd([git, "clone", "--depth", "1", url, cache]);
   if (result.status !== 0 || !hasCache(cache)) {
     const detail = (result.stderr || result.stdout || "").trim();
@@ -265,23 +284,31 @@ function softCloneRepo(ownerRepo: string, cache: string): string {
   return "git";
 }
 
-function cloneRepo(ownerRepo: string, cache: string): string {
-  const method = softCloneRepo(ownerRepo, cache);
+function cloneRepo(
+  ownerRepo: string,
+  cache: string,
+  cloneUrl: string | null = null,
+): string {
+  const method = softCloneRepo(ownerRepo, cache, cloneUrl);
   if (method.startsWith("error:")) {
     fail(method.slice("error:".length).trim(), { source: ownerRepo });
   }
   return method;
 }
 
-function ensureRepo(ownerRepo: string): { cache: string; action: string } {
+function ensureRepo(
+  ownerRepo: string,
+  cloneUrl: string | null = null,
+): { cache: string; action: string } {
   const cache = cacheDirFor(ownerRepo);
   if (hasCache(cache)) return { cache, action: "cached" };
-  const method = cloneRepo(ownerRepo, cache);
+  const method = cloneRepo(ownerRepo, cache, cloneUrl);
   return { cache, action: `cloned:${method}` };
 }
 
 function softUpdateRepo(
   ownerRepo: string,
+  cloneUrl: string | null = null,
 ): { cache: string | null; action: string | null; error: string | null } {
   const cache = cacheDirFor(ownerRepo);
   const git = which("git");
@@ -292,7 +319,7 @@ function softUpdateRepo(
   }
 
   try {
-    const method = softCloneRepo(ownerRepo, cache);
+    const method = softCloneRepo(ownerRepo, cache, cloneUrl);
     if (method.startsWith("error:")) {
       return {
         cache,
@@ -306,8 +333,11 @@ function softUpdateRepo(
   }
 }
 
-function updateRepo(ownerRepo: string): { cache: string; action: string } {
-  const { cache, action, error } = softUpdateRepo(ownerRepo);
+function updateRepo(
+  ownerRepo: string,
+  cloneUrl: string | null = null,
+): { cache: string; action: string } {
+  const { cache, action, error } = softUpdateRepo(ownerRepo, cloneUrl);
   if (error !== null) {
     fail(error, {
       source: ownerRepo,
@@ -513,8 +543,8 @@ function discoverSkills(cache: string): SkillEntry[] {
 // ---------------------------------------------------------------------------
 
 function cmdEnsure(sourceRaw: string): never {
-  const { ownerRepo } = normalizeSource(sourceRaw);
-  const { cache, action } = ensureRepo(ownerRepo);
+  const { ownerRepo, cloneUrl } = normalizeSource(sourceRaw);
+  const { cache, action } = ensureRepo(ownerRepo, cloneUrl);
   emit({
     ok: true,
     source: ownerRepo,
@@ -528,8 +558,8 @@ function cmdUpdate(sourceRaw: string | null): never {
     cmdUpdateAll();
   }
 
-  const { ownerRepo } = normalizeSource(sourceRaw!);
-  const { cache, action } = updateRepo(ownerRepo);
+  const { ownerRepo, cloneUrl } = normalizeSource(sourceRaw!);
+  const { cache, action } = updateRepo(ownerRepo, cloneUrl);
   emit({
     ok: true,
     mode: "single",
@@ -607,8 +637,8 @@ function cmdList(sourceRaw: string | null): never {
     cmdListCached();
   }
 
-  const { ownerRepo } = normalizeSource(sourceRaw!);
-  const { cache, action } = ensureRepo(ownerRepo);
+  const { ownerRepo, cloneUrl } = normalizeSource(sourceRaw!);
+  const { cache, action } = ensureRepo(ownerRepo, cloneUrl);
   const skills = discoverSkills(cache);
   emit({
     ok: true,
@@ -664,8 +694,8 @@ function cmdListCached(): never {
 }
 
 function cmdResolve(sourceRaw: string): never {
-  const { ownerRepo, skill: skillName } = normalizeSource(sourceRaw);
-  const { cache, action } = ensureRepo(ownerRepo);
+  const { ownerRepo, skill: skillName, cloneUrl } = normalizeSource(sourceRaw);
+  const { cache, action } = ensureRepo(ownerRepo, cloneUrl);
   const skills = discoverSkills(cache);
 
   if (!skills.length) {
