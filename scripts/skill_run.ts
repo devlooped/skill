@@ -253,8 +253,12 @@ function softCloneRepo(
 
   const gh = which("gh");
   if (gh) {
-    const result = runCmd([gh, "repo", "clone", ownerRepo, cache, "--", "--depth", "1"]);
-    if (result.status === 0 && hasCache(cache)) return "gh";
+    if (cloneUrl && cloneUrl.startsWith("https://gist.github.com/")) {
+      // gh repo clone doesn't support gists; fall straight through to git clone.
+    } else {
+      const result = runCmd([gh, "repo", "clone", ownerRepo, cache, "--", "--depth", "1"]);
+      if (result.status === 0 && hasCache(cache)) return "gh";
+    }
   }
 
   const git = which("git");

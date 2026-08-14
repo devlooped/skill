@@ -290,10 +290,14 @@ def soft_clone_repo(owner_repo: str, cache: Path, clone_url: str | None = None) 
 
     gh = which("gh")
     if gh:
-        result = run_cmd([gh, "repo", "clone", owner_repo, str(cache), "--", "--depth", "1"])
-        if result.returncode == 0 and has_cache(cache):
-            return "gh"
-        # fall through to git on gh failure
+        if clone_url and clone_url.startswith("https://gist.github.com/"):
+            # gh repo clone doesn't support gists; fall straight through to git clone.
+            pass
+        else:
+            result = run_cmd([gh, "repo", "clone", owner_repo, str(cache), "--", "--depth", "1"])
+            if result.returncode == 0 and has_cache(cache):
+                return "gh"
+        # fall through to git on gh failure or gist source
 
     git = which("git")
     if not git:
