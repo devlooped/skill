@@ -291,14 +291,15 @@ def soft_clone_repo(owner_repo: str, cache: Path, clone_url: str | None = None) 
     gh = which("gh")
     if gh:
         if clone_url and "gist.github.com" in clone_url:
-            # Extract gist_id from clone_url (https://gist.github.com/<id>.git)
-            gist_id = clone_url.rstrip("/").removesuffix(".git").rsplit("/", 1)[-1]
-            result = run_cmd([gh, "gist", "clone", gist_id, str(cache)])
+            # For gists, fall straight through to git clone with the explicit URL.
+            # gh auth login configures git credentials, so git clone works for
+            # secret gists too.
+            pass
         else:
             result = run_cmd([gh, "repo", "clone", owner_repo, str(cache), "--", "--depth", "1"])
-        if result.returncode == 0 and has_cache(cache):
-            return "gh"
-        # fall through to git on gh failure
+            if result.returncode == 0 and has_cache(cache):
+                return "gh"
+        # fall through to git on gh failure or gist source
 
     git = which("git")
     if not git:

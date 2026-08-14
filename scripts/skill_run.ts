@@ -252,15 +252,11 @@ function softCloneRepo(
   }
 
   const gh = which("gh");
-  if (gh) {
-    let result: { status: number; stdout: string; stderr: string };
-    if (cloneUrl && cloneUrl.includes("gist.github.com")) {
-      // Extract gist_id from clone URL: https://gist.github.com/<id>.git
-      const gistId = cloneUrl.replace(/\.git$/, "").split("/").pop()!;
-      result = runCmd([gh, "gist", "clone", gistId, cache]);
-    } else {
-      result = runCmd([gh, "repo", "clone", ownerRepo, cache, "--", "--depth", "1"]);
-    }
+  if (gh && !(cloneUrl && cloneUrl.includes("gist.github.com"))) {
+    // For gists, skip gh repo clone and use git clone with the explicit URL.
+    // gh auth login configures git credentials, so git clone works for
+    // secret gists too.
+    const result = runCmd([gh, "repo", "clone", ownerRepo, cache, "--", "--depth", "1"]);
     if (result.status === 0 && hasCache(cache)) return "gh";
   }
 
